@@ -1,0 +1,1 @@
+{"version":3,"file":"identifier-normalizer.js","sourceRoot":"","sources":["../../../src/auth/identifier-normalizer.ts"],"names":[],"mappings":";;AAAA,kDAEC;AAED,4DAEC;AAND,SAAgB,mBAAmB,CAAC,UAA8B;IAChE,OAAO,CAAC,UAAU,IAAI,EAAE,CAAC,CAAC,IAAI,EAAE,CAAC,WAAW,EAAE,CAAC;AACjD,CAAC;AAED,SAAgB,wBAAwB,CAAC,GAAW;IAClD,OAAO,mBAAmB,CAAC,GAAG,CAAC,CAAC;AAClC,CAAC"}
