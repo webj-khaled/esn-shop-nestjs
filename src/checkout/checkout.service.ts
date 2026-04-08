@@ -42,6 +42,11 @@ type StripeLineItem = {
     product_details?: {
       description?: string;
     };
+    product?:
+      | {
+          description?: string | null;
+        }
+      | string;
   };
 };
 
@@ -81,6 +86,8 @@ type CheckoutOrderItemRow = {
   orderId: number;
   productName: string;
   productDescription: string | null;
+  shirtColor: string | null;
+  shirtSize: string | null;
   quantity: number;
   unitAmountCents: number;
   totalAmountCents: number;
@@ -107,6 +114,8 @@ type CheckoutOrderResponse = {
     id: number;
     productName: string;
     productDescription: string | null;
+    shirtColor: string | null;
+    shirtSize: string | null;
     quantity: number;
     unitAmount: number;
     totalAmount: number;
@@ -135,6 +144,8 @@ const SHIRT_PRODUCT = {
     },
   },
 } as const;
+
+const STRIPE_CURRENCY = 'eur';
 
 @Injectable()
 export class CheckoutService {
@@ -176,11 +187,16 @@ export class CheckoutService {
     });
 
     items.forEach((item, index) => {
+      payload.append(`metadata[item${index}Color]`, item.color);
+      payload.append(`metadata[item${index}Size]`, item.size);
       payload.append(
         `line_items[${index}][quantity]`,
         item.quantity.toString(),
       );
-      payload.append(`line_items[${index}][price_data][currency]`, 'usd');
+      payload.append(
+        `line_items[${index}][price_data][currency]`,
+        STRIPE_CURRENCY,
+      );
       payload.append(
         `line_items[${index}][price_data][unit_amount]`,
         SHIRT_PRODUCT.unitAmountCents.toString(),
@@ -263,7 +279,7 @@ export class CheckoutService {
     const totalAmountCents =
       stripeSession.amount_total ??
       stripeLineItems.reduce((sum, item) => sum + (item.amount_total ?? 0), 0);
-    const currency = (stripeSession.currency ?? 'usd').toUpperCase();
+    const currency = (stripeSession.currency ?? STRIPE_CURRENCY).toUpperCase();
 
     const createdOrderRows = await this.prismaService.$queryRaw<
       Pick<CheckoutOrderRow, 'id' | 'createdAt'>[]
@@ -306,26 +322,39 @@ export class CheckoutService {
       );
     }
 
-    for (const lineItem of stripeLineItems) {
+    for (const [index, lineItem] of stripeLineItems.entries()) {
       const quantity = lineItem.quantity ?? 1;
       const totalLineAmount = lineItem.amount_total ?? 0;
       const unitAmount =
         lineItem.price?.unit_amount ??
         (quantity > 0 ? Math.round(totalLineAmount / quantity) : 0);
+      const productName = lineItem.description ?? SHIRT_PRODUCT.name;
+      const productDescription =
+        this.resolveStripeLineItemDescription(lineItem);
+      const shirtSelection = this.extractShirtSelection(
+        productName,
+        productDescription,
+      );
+      const metadataColor = stripeSession.metadata?.[`item${index}Color`];
+      const metadataSize = stripeSession.metadata?.[`item${index}Size`];
 
       await this.prismaService.$executeRaw`
         INSERT INTO "CheckoutOrderItem" (
           "orderId",
           "productName",
           "productDescription",
+          "shirtColor",
+          "shirtSize",
           "quantity",
           "unitAmountCents",
           "totalAmountCents"
         )
         VALUES (
           ${createdOrder.id},
-          ${lineItem.description ?? SHIRT_PRODUCT.name},
-          ${lineItem.price?.product_details?.description ?? null},
+          ${productName},
+          ${productDescription ?? null},
+          ${metadataColor?.toLowerCase() ?? shirtSelection.color},
+          ${metadataSize?.toUpperCase() ?? shirtSelection.size},
           ${quantity},
           ${unitAmount},
           ${totalLineAmount}
@@ -372,26 +401,118 @@ export class CheckoutService {
       ORDER BY "createdAt" DESC
     `;
 
+    return this.loadOrdersWithItems(orderRows);
+  }
+
+  async getMyOrders(cookieHeader?: string) {
+    const email = this.assertAuthenticatedEmail(cookieHeader);
+    await this.ensureOrderTables();
+
+    const orderRows = await this.prismaService.$queryRaw<CheckoutOrderRow[]>`
+      SELECT
+        "id",
+        "stripeSessionId",
+        "totalAmountCents",
+        "currency",
+        "customerEmail",
+        "deliveryFullName",
+        "deliveryPhone",
+        "deliveryAddressLine1",
+        "deliveryAddressLine2",
+        "deliveryCity",
+        "deliveryState",
+        "deliveryPostalCode",
+        "deliveryCountry",
+        "createdAt"
+      FROM "CheckoutOrder"
+      WHERE LOWER("customerEmail") = LOWER(${email})
+      ORDER BY "createdAt" DESC
+    `;
+
+    return this.loadOrdersWithItems(orderRows);
+  }
+
+  private async loadOrdersWithItems(orderRows: CheckoutOrderRow[]) {
     const orders: CheckoutOrderResponse[] = [];
     for (const orderRow of orderRows) {
-      const itemRows = await this.prismaService.$queryRaw<
-        CheckoutOrderItemRow[]
-      >`
-        SELECT
-          "id",
-          "orderId",
-          "productName",
-          "productDescription",
-          "quantity",
-          "unitAmountCents",
-          "totalAmountCents"
-        FROM "CheckoutOrderItem"
-        WHERE "orderId" = ${orderRow.id}
-        ORDER BY "id" ASC
-      `;
+      let itemRows = await this.loadOrderItems(orderRow.id);
+      if (itemRows.some((item) => !item.shirtColor || !item.shirtSize)) {
+        await this.backfillMissingOrderItemSelections(orderRow, itemRows);
+        itemRows = await this.loadOrderItems(orderRow.id);
+      }
+
       orders.push(this.toOrderResponse(orderRow, itemRows));
     }
     return orders;
+  }
+
+  private async loadOrderItems(orderId: number) {
+    return this.prismaService.$queryRaw<CheckoutOrderItemRow[]>`
+      SELECT
+        "id",
+        "orderId",
+        "productName",
+        "productDescription",
+        "shirtColor",
+        "shirtSize",
+        "quantity",
+        "unitAmountCents",
+        "totalAmountCents"
+      FROM "CheckoutOrderItem"
+      WHERE "orderId" = ${orderId}
+      ORDER BY "id" ASC
+    `;
+  }
+
+  private async backfillMissingOrderItemSelections(
+    orderRow: Pick<CheckoutOrderRow, 'id' | 'stripeSessionId'>,
+    itemRows: CheckoutOrderItemRow[],
+  ) {
+    try {
+      const stripeSecretKey = this.getStripeSecretKey();
+      const stripeSession = await this.fetchStripeSession(
+        orderRow.stripeSessionId,
+        stripeSecretKey,
+      );
+      const stripeLineItems = await this.fetchStripeLineItems(
+        orderRow.stripeSessionId,
+        stripeSecretKey,
+      );
+
+      for (const [index, itemRow] of itemRows.entries()) {
+        if (itemRow.shirtColor && itemRow.shirtSize) {
+          continue;
+        }
+
+        const stripeLineItem = stripeLineItems[index];
+        const metadataColor = stripeSession.metadata?.[`item${index}Color`];
+        const metadataSize = stripeSession.metadata?.[`item${index}Size`];
+
+        const parsedSelection = this.extractShirtSelection(
+          stripeLineItem?.description ?? itemRow.productName,
+          this.resolveStripeLineItemDescription(stripeLineItem) ??
+            itemRow.productDescription,
+        );
+
+        const shirtColor =
+          metadataColor?.toLowerCase() ?? parsedSelection.color;
+        const shirtSize = metadataSize?.toUpperCase() ?? parsedSelection.size;
+
+        if (!shirtColor && !shirtSize) {
+          continue;
+        }
+
+        await this.prismaService.$executeRaw`
+          UPDATE "CheckoutOrderItem"
+          SET
+            "shirtColor" = COALESCE("shirtColor", ${shirtColor}),
+            "shirtSize" = COALESCE("shirtSize", ${shirtSize})
+          WHERE "id" = ${itemRow.id}
+        `;
+      }
+    } catch {
+      // Best-effort backfill only; order listing must still load.
+    }
   }
 
   private async backfillMissingOrders() {
@@ -433,11 +554,40 @@ export class CheckoutService {
         SHIRT_PRODUCT.stockByColorAndSize[item.color][item.size];
       if (item.quantity > availableStock) {
         throw new BadRequestException(
-          `Only ${availableStock} item(s) available for ${item.color}/${item.size}.`,
+          'Selected quantity is not available for this color/size option.',
         );
       }
       return item;
     });
+  }
+
+  private extractShirtSelection(
+    productName?: string | null,
+    productDescription?: string | null,
+  ) {
+    const source = `${productName ?? ''} ${productDescription ?? ''}`;
+    const colorMatch = source.match(/color:\s*([a-z]+)/i);
+    const sizeMatch = source.match(/size:\s*([a-z0-9]+)/i);
+
+    return {
+      color: colorMatch?.[1]?.toLowerCase() ?? null,
+      size: sizeMatch?.[1]?.toUpperCase() ?? null,
+    };
+  }
+
+  private resolveStripeLineItemDescription(lineItem?: StripeLineItem) {
+    const productDetailsDescription =
+      lineItem?.price?.product_details?.description;
+    if (productDetailsDescription) {
+      return productDetailsDescription;
+    }
+
+    const product = lineItem?.price?.product;
+    if (product && typeof product === 'object') {
+      return product.description ?? null;
+    }
+
+    return null;
   }
 
   private getStripeSecretKey() {
@@ -462,6 +612,8 @@ export class CheckoutService {
         currency: order.currency,
         items: order.items.map((item) => ({
           productName: item.productName,
+          shirtColor: item.shirtColor,
+          shirtSize: item.shirtSize,
           quantity: item.quantity,
           totalAmount: item.totalAmount,
         })),
@@ -472,19 +624,7 @@ export class CheckoutService {
   }
 
   private assertAdmin(cookieHeader?: string) {
-    const token = this.getCookieValue(cookieHeader, 'Authentication');
-    if (!token) {
-      throw new ForbiddenException('Admin access required.');
-    }
-
-    const payload = this.verifyTokenPayload(token);
-    if (!payload) {
-      throw new ForbiddenException('Admin access required.');
-    }
-
-    const email = String(payload.email ?? '')
-      .trim()
-      .toLowerCase();
+    const email = this.assertAuthenticatedEmail(cookieHeader);
     const admins = (this.configService.get<string>('ADMIN_EMAILS') ?? '')
       .split(',')
       .map((item) => item.trim().toLowerCase())
@@ -496,6 +636,23 @@ export class CheckoutService {
     if (!email || !admins.includes(email)) {
       throw new ForbiddenException('Admin access required.');
     }
+  }
+
+  private assertAuthenticatedEmail(cookieHeader?: string) {
+    const token = this.getCookieValue(cookieHeader, 'Authentication');
+    if (!token) {
+      throw new ForbiddenException('Authentication required.');
+    }
+
+    const payload = this.verifyTokenPayload(token);
+    const email = String(payload?.email ?? '')
+      .trim()
+      .toLowerCase();
+    if (!email) {
+      throw new ForbiddenException('Authentication required.');
+    }
+
+    return email;
   }
 
   private getCookieValue(cookieHeader: string | undefined, name: string) {
@@ -587,8 +744,11 @@ export class CheckoutService {
     sessionId: string,
     stripeSecretKey: string,
   ) {
+    const params = new URLSearchParams({ limit: '100' });
+    params.append('expand[]', 'data.price.product');
+
     const response = await fetch(
-      `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items?limit=100`,
+      `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items?${params.toString()}`,
       {
         method: 'GET',
         headers: { Authorization: `Bearer ${stripeSecretKey}` },
@@ -720,10 +880,22 @@ export class CheckoutService {
         "orderId" INTEGER NOT NULL REFERENCES "CheckoutOrder"("id") ON DELETE CASCADE,
         "productName" TEXT NOT NULL,
         "productDescription" TEXT,
+        "shirtColor" TEXT,
+        "shirtSize" TEXT,
         "quantity" INTEGER NOT NULL,
         "unitAmountCents" INTEGER NOT NULL,
         "totalAmountCents" INTEGER NOT NULL
       )
+    `);
+
+    await this.prismaService.$executeRawUnsafe(`
+      ALTER TABLE "CheckoutOrderItem"
+      ADD COLUMN IF NOT EXISTS "shirtColor" TEXT
+    `);
+
+    await this.prismaService.$executeRawUnsafe(`
+      ALTER TABLE "CheckoutOrderItem"
+      ADD COLUMN IF NOT EXISTS "shirtSize" TEXT
     `);
 
     this.orderTablesReady = true;
@@ -755,19 +927,11 @@ export class CheckoutService {
       return null;
     }
 
-    const itemRows = await this.prismaService.$queryRaw<CheckoutOrderItemRow[]>`
-      SELECT
-        "id",
-        "orderId",
-        "productName",
-        "productDescription",
-        "quantity",
-        "unitAmountCents",
-        "totalAmountCents"
-      FROM "CheckoutOrderItem"
-      WHERE "orderId" = ${orderRow.id}
-      ORDER BY "id" ASC
-    `;
+    let itemRows = await this.loadOrderItems(orderRow.id);
+    if (itemRows.some((item) => !item.shirtColor || !item.shirtSize)) {
+      await this.backfillMissingOrderItemSelections(orderRow, itemRows);
+      itemRows = await this.loadOrderItems(orderRow.id);
+    }
 
     return this.toOrderResponse(orderRow, itemRows);
   }
@@ -793,14 +957,23 @@ export class CheckoutService {
         country: orderRow.deliveryCountry,
       },
       createdAt: orderRow.createdAt,
-      items: itemRows.map((item) => ({
-        id: item.id,
-        productName: item.productName,
-        productDescription: item.productDescription,
-        quantity: item.quantity,
-        unitAmount: item.unitAmountCents / 100,
-        totalAmount: item.totalAmountCents / 100,
-      })),
+      items: itemRows.map((item) => {
+        const shirtSelection = this.extractShirtSelection(
+          item.productName,
+          item.productDescription,
+        );
+
+        return {
+          id: item.id,
+          productName: item.productName,
+          productDescription: item.productDescription,
+          shirtColor: item.shirtColor ?? shirtSelection.color,
+          shirtSize: item.shirtSize ?? shirtSelection.size,
+          quantity: item.quantity,
+          unitAmount: item.unitAmountCents / 100,
+          totalAmount: item.totalAmountCents / 100,
+        };
+      }),
     };
   }
 }

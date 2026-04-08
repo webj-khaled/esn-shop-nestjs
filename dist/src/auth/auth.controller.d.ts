@@ -14,4 +14,5 @@ export declare class AuthController {
     completeRecovery(payload: RecoveryCompleteRequest): Promise<{
         message: string;
     }>;
+    getAuthState(cookieHeader?: string): import("./auth.service").AuthenticationState;
 }

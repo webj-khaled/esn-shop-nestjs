@@ -21,4 +21,9 @@ export class CheckoutController {
   getOrders(@Headers('cookie') cookieHeader?: string) {
     return this.checkoutService.getOrders(cookieHeader);
   }
+
+  @Get('my-orders')
+  getMyOrders(@Headers('cookie') cookieHeader?: string) {
+    return this.checkoutService.getMyOrders(cookieHeader);
+  }
 }

@@ -9,6 +9,8 @@ export interface OrderCompletionTemplateInput {
     currency: string;
     items: Array<{
         productName: string;
+        shirtColor: string | null;
+        shirtSize: string | null;
         quantity: number;
         totalAmount: number;
     }>;

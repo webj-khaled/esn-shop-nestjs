@@ -7,6 +7,11 @@ interface LoginResult {
     token: string;
     expiresAt: Date;
 }
+export interface AuthenticationState {
+    authenticated: boolean;
+    email: string | null;
+    isAdmin: boolean;
+}
 export declare class AuthService {
     private readonly usersService;
     private readonly signInAttemptsService;
@@ -25,11 +30,15 @@ export declare class AuthService {
     completePasswordRecovery(token: string, password: string): Promise<{
         message: string;
     }>;
+    getAuthenticationState(cookieHeader?: string): AuthenticationState;
     private ensurePasswordResetTable;
     private getPasswordResetTtlMinutes;
     private hashRecoveryToken;
     private normalizeRecoveryToken;
     private base64url;
+    private getCookieValue;
+    private verifyTokenPayload;
+    private decodeBase64url;
     private failure;
 }
 export {};

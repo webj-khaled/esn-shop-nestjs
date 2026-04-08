@@ -24,6 +24,12 @@ interface PasswordResetTokenRow {
   userId: number;
 }
 
+export interface AuthenticationState {
+  authenticated: boolean;
+  email: string | null;
+  isAdmin: boolean;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -192,6 +198,32 @@ export class AuthService {
     return { message: 'Password reset successful.' };
   }
 
+  getAuthenticationState(cookieHeader?: string): AuthenticationState {
+    const token = this.getCookieValue(cookieHeader, 'Authentication');
+    if (!token) {
+      return { authenticated: false, email: null, isAdmin: false };
+    }
+
+    const payload = this.verifyTokenPayload(token);
+    const email = String(payload?.email ?? '')
+      .trim()
+      .toLowerCase();
+    if (!email) {
+      return { authenticated: false, email: null, isAdmin: false };
+    }
+
+    const adminEmails = (this.configService.get<string>('ADMIN_EMAILS') ?? '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+
+    return {
+      authenticated: true,
+      email,
+      isAdmin: adminEmails.includes(email),
+    };
+  }
+
   private async ensurePasswordResetTable() {
     if (this.passwordResetTableReady) {
       return;
@@ -246,6 +278,61 @@ export class AuthService {
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
+  }
+
+  private getCookieValue(cookieHeader: string | undefined, name: string) {
+    if (!cookieHeader) {
+      return undefined;
+    }
+
+    const cookies = cookieHeader.split(';');
+    for (const cookieEntry of cookies) {
+      const [key, ...rest] = cookieEntry.split('=');
+      if (key?.trim() === name) {
+        return decodeURIComponent(rest.join('=').trim());
+      }
+    }
+
+    return undefined;
+  }
+
+  private verifyTokenPayload(
+    token: string,
+  ): { email?: string; exp?: number } | null {
+    const [header, payload, signature] = token.split('.');
+    if (!header || !payload || !signature) {
+      return null;
+    }
+
+    const unsignedToken = `${header}.${payload}`;
+    const expectedSignature = this.base64url(
+      createHmac('sha256', this.jwtSecret).update(unsignedToken).digest(),
+    );
+    if (expectedSignature !== signature) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(this.decodeBase64url(payload)) as {
+        email?: string;
+        exp?: number;
+      };
+
+      if (parsed.exp && Date.now() / 1000 > parsed.exp) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private decodeBase64url(value: string) {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padLength = normalized.length % 4;
+    const padded =
+      padLength === 0 ? normalized : normalized + '='.repeat(4 - padLength);
+    return Buffer.from(padded, 'base64').toString('utf8');
   }
 
   private async failure(

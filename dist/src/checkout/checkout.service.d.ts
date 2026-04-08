@@ -23,6 +23,8 @@ type CheckoutOrderResponse = {
         id: number;
         productName: string;
         productDescription: string | null;
+        shirtColor: string | null;
+        shirtSize: string | null;
         quantity: number;
         unitAmount: number;
         totalAmount: number;
@@ -43,11 +45,18 @@ export declare class CheckoutService {
         sendCompletionEmail?: boolean;
     }): Promise<CheckoutOrderResponse>;
     getOrders(cookieHeader?: string): Promise<CheckoutOrderResponse[]>;
+    getMyOrders(cookieHeader?: string): Promise<CheckoutOrderResponse[]>;
+    private loadOrdersWithItems;
+    private loadOrderItems;
+    private backfillMissingOrderItemSelections;
     private backfillMissingOrders;
     private validateItems;
+    private extractShirtSelection;
+    private resolveStripeLineItemDescription;
     private getStripeSecretKey;
     private sendOrderCompletionEmail;
     private assertAdmin;
+    private assertAuthenticatedEmail;
     private getCookieValue;
     private verifyTokenPayload;
     private decodeBase64url;

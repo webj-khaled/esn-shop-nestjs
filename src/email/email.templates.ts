@@ -10,6 +10,8 @@ export interface OrderCompletionTemplateInput {
   currency: string;
   items: Array<{
     productName: string;
+    shirtColor: string | null;
+    shirtSize: string | null;
     quantity: number;
     totalAmount: number;
   }>;
@@ -24,10 +26,10 @@ const escapeHtml = (value: string) =>
     .replace(/'/g, '&#39;');
 
 const formatCurrency = (amount: number, currency: string) =>
-  new Intl.NumberFormat('en-US', {
+  new Intl.NumberFormat('en-IE', {
     style: 'currency',
-    currency: currency || 'USD',
-    currencyDisplay: 'code',
+    currency: currency || 'EUR',
+    currencyDisplay: 'symbol',
   }).format(amount);
 
 export const buildWelcomeEmail = (appName: string): EmailTemplate => ({
@@ -64,24 +66,39 @@ export const buildOrderCompletedEmail = (
   appName: string,
   input: OrderCompletionTemplateInput,
 ): EmailTemplate => {
+  const getSelectionText = (
+    item: OrderCompletionTemplateInput['items'][number],
+  ) => {
+    const parts = [
+      item.shirtColor ? `Color: ${item.shirtColor.toUpperCase()}` : '',
+      item.shirtSize ? `Size: ${item.shirtSize.toUpperCase()}` : '',
+    ].filter(Boolean);
+
+    return parts.join(' | ');
+  };
+
   const itemListHtml = input.items
-    .map(
-      (item) =>
-        `<li>${escapeHtml(item.productName)} x ${item.quantity} - ${formatCurrency(
-          item.totalAmount,
-          input.currency,
-        )}</li>`,
-    )
+    .map((item) => {
+      const selection = getSelectionText(item);
+      const selectionSuffix = selection ? ` (${escapeHtml(selection)})` : '';
+
+      return `<li>${escapeHtml(item.productName)} x ${item.quantity}${selectionSuffix} - ${formatCurrency(
+        item.totalAmount,
+        input.currency,
+      )}</li>`;
+    })
     .join('');
 
   const itemListText = input.items
-    .map(
-      (item) =>
-        `${item.productName} x ${item.quantity} - ${formatCurrency(
-          item.totalAmount,
-          input.currency,
-        )}`,
-    )
+    .map((item) => {
+      const selection = getSelectionText(item);
+      const selectionSuffix = selection ? ` (${selection})` : '';
+
+      return `${item.productName} x ${item.quantity}${selectionSuffix} - ${formatCurrency(
+        item.totalAmount,
+        input.currency,
+      )}`;
+    })
     .join('\n');
 
   const total = formatCurrency(input.totalAmount, input.currency);

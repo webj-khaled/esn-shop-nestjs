@@ -37,6 +37,7 @@ const SHIRT_PRODUCT = {
         },
     },
 };
+const STRIPE_CURRENCY = 'eur';
 let CheckoutService = class CheckoutService {
     configService;
     prismaService;
@@ -73,8 +74,10 @@ let CheckoutService = class CheckoutService {
             'metadata[deliveryCountry]': deliveryAddress.country,
         });
         items.forEach((item, index) => {
+            payload.append(`metadata[item${index}Color]`, item.color);
+            payload.append(`metadata[item${index}Size]`, item.size);
             payload.append(`line_items[${index}][quantity]`, item.quantity.toString());
-            payload.append(`line_items[${index}][price_data][currency]`, 'usd');
+            payload.append(`line_items[${index}][price_data][currency]`, STRIPE_CURRENCY);
             payload.append(`line_items[${index}][price_data][unit_amount]`, SHIRT_PRODUCT.unitAmountCents.toString());
             payload.append(`line_items[${index}][price_data][product_data][name]`, SHIRT_PRODUCT.name);
             payload.append(`line_items[${index}][price_data][product_data][description]`, `${SHIRT_PRODUCT.description} - Color: ${item.color}, Size: ${item.size}`);
@@ -117,7 +120,7 @@ let CheckoutService = class CheckoutService {
         const deliveryAddress = this.extractDeliveryAddress(stripeSession.metadata);
         const totalAmountCents = stripeSession.amount_total ??
             stripeLineItems.reduce((sum, item) => sum + (item.amount_total ?? 0), 0);
-        const currency = (stripeSession.currency ?? 'usd').toUpperCase();
+        const currency = (stripeSession.currency ?? STRIPE_CURRENCY).toUpperCase();
         const createdOrderRows = await this.prismaService.$queryRaw `
       INSERT INTO "CheckoutOrder" (
         "stripeSessionId",
@@ -153,24 +156,33 @@ let CheckoutService = class CheckoutService {
         if (!createdOrder) {
             throw new common_1.InternalServerErrorException('Failed to persist checkout order.');
         }
-        for (const lineItem of stripeLineItems) {
+        for (const [index, lineItem] of stripeLineItems.entries()) {
             const quantity = lineItem.quantity ?? 1;
             const totalLineAmount = lineItem.amount_total ?? 0;
             const unitAmount = lineItem.price?.unit_amount ??
                 (quantity > 0 ? Math.round(totalLineAmount / quantity) : 0);
+            const productName = lineItem.description ?? SHIRT_PRODUCT.name;
+            const productDescription = this.resolveStripeLineItemDescription(lineItem);
+            const shirtSelection = this.extractShirtSelection(productName, productDescription);
+            const metadataColor = stripeSession.metadata?.[`item${index}Color`];
+            const metadataSize = stripeSession.metadata?.[`item${index}Size`];
             await this.prismaService.$executeRaw `
         INSERT INTO "CheckoutOrderItem" (
           "orderId",
           "productName",
           "productDescription",
+          "shirtColor",
+          "shirtSize",
           "quantity",
           "unitAmountCents",
           "totalAmountCents"
         )
         VALUES (
           ${createdOrder.id},
-          ${lineItem.description ?? SHIRT_PRODUCT.name},
-          ${lineItem.price?.product_details?.description ?? null},
+          ${productName},
+          ${productDescription ?? null},
+          ${metadataColor?.toLowerCase() ?? shirtSelection.color},
+          ${metadataSize?.toUpperCase() ?? shirtSelection.size},
           ${quantity},
           ${unitAmount},
           ${totalLineAmount}
@@ -209,24 +221,92 @@ let CheckoutService = class CheckoutService {
       FROM "CheckoutOrder"
       ORDER BY "createdAt" DESC
     `;
+        return this.loadOrdersWithItems(orderRows);
+    }
+    async getMyOrders(cookieHeader) {
+        const email = this.assertAuthenticatedEmail(cookieHeader);
+        await this.ensureOrderTables();
+        const orderRows = await this.prismaService.$queryRaw `
+      SELECT
+        "id",
+        "stripeSessionId",
+        "totalAmountCents",
+        "currency",
+        "customerEmail",
+        "deliveryFullName",
+        "deliveryPhone",
+        "deliveryAddressLine1",
+        "deliveryAddressLine2",
+        "deliveryCity",
+        "deliveryState",
+        "deliveryPostalCode",
+        "deliveryCountry",
+        "createdAt"
+      FROM "CheckoutOrder"
+      WHERE LOWER("customerEmail") = LOWER(${email})
+      ORDER BY "createdAt" DESC
+    `;
+        return this.loadOrdersWithItems(orderRows);
+    }
+    async loadOrdersWithItems(orderRows) {
         const orders = [];
         for (const orderRow of orderRows) {
-            const itemRows = await this.prismaService.$queryRaw `
-        SELECT
-          "id",
-          "orderId",
-          "productName",
-          "productDescription",
-          "quantity",
-          "unitAmountCents",
-          "totalAmountCents"
-        FROM "CheckoutOrderItem"
-        WHERE "orderId" = ${orderRow.id}
-        ORDER BY "id" ASC
-      `;
+            let itemRows = await this.loadOrderItems(orderRow.id);
+            if (itemRows.some((item) => !item.shirtColor || !item.shirtSize)) {
+                await this.backfillMissingOrderItemSelections(orderRow, itemRows);
+                itemRows = await this.loadOrderItems(orderRow.id);
+            }
             orders.push(this.toOrderResponse(orderRow, itemRows));
         }
         return orders;
+    }
+    async loadOrderItems(orderId) {
+        return this.prismaService.$queryRaw `
+      SELECT
+        "id",
+        "orderId",
+        "productName",
+        "productDescription",
+        "shirtColor",
+        "shirtSize",
+        "quantity",
+        "unitAmountCents",
+        "totalAmountCents"
+      FROM "CheckoutOrderItem"
+      WHERE "orderId" = ${orderId}
+      ORDER BY "id" ASC
+    `;
+    }
+    async backfillMissingOrderItemSelections(orderRow, itemRows) {
+        try {
+            const stripeSecretKey = this.getStripeSecretKey();
+            const stripeSession = await this.fetchStripeSession(orderRow.stripeSessionId, stripeSecretKey);
+            const stripeLineItems = await this.fetchStripeLineItems(orderRow.stripeSessionId, stripeSecretKey);
+            for (const [index, itemRow] of itemRows.entries()) {
+                if (itemRow.shirtColor && itemRow.shirtSize) {
+                    continue;
+                }
+                const stripeLineItem = stripeLineItems[index];
+                const metadataColor = stripeSession.metadata?.[`item${index}Color`];
+                const metadataSize = stripeSession.metadata?.[`item${index}Size`];
+                const parsedSelection = this.extractShirtSelection(stripeLineItem?.description ?? itemRow.productName, this.resolveStripeLineItemDescription(stripeLineItem) ??
+                    itemRow.productDescription);
+                const shirtColor = metadataColor?.toLowerCase() ?? parsedSelection.color;
+                const shirtSize = metadataSize?.toUpperCase() ?? parsedSelection.size;
+                if (!shirtColor && !shirtSize) {
+                    continue;
+                }
+                await this.prismaService.$executeRaw `
+          UPDATE "CheckoutOrderItem"
+          SET
+            "shirtColor" = COALESCE("shirtColor", ${shirtColor}),
+            "shirtSize" = COALESCE("shirtSize", ${shirtSize})
+          WHERE "id" = ${itemRow.id}
+        `;
+            }
+        }
+        catch {
+        }
     }
     async backfillMissingOrders() {
         const backfillCooldownMs = 60_000;
@@ -259,10 +339,30 @@ let CheckoutService = class CheckoutService {
             }
             const availableStock = SHIRT_PRODUCT.stockByColorAndSize[item.color][item.size];
             if (item.quantity > availableStock) {
-                throw new common_1.BadRequestException(`Only ${availableStock} item(s) available for ${item.color}/${item.size}.`);
+                throw new common_1.BadRequestException('Selected quantity is not available for this color/size option.');
             }
             return item;
         });
+    }
+    extractShirtSelection(productName, productDescription) {
+        const source = `${productName ?? ''} ${productDescription ?? ''}`;
+        const colorMatch = source.match(/color:\s*([a-z]+)/i);
+        const sizeMatch = source.match(/size:\s*([a-z0-9]+)/i);
+        return {
+            color: colorMatch?.[1]?.toLowerCase() ?? null,
+            size: sizeMatch?.[1]?.toUpperCase() ?? null,
+        };
+    }
+    resolveStripeLineItemDescription(lineItem) {
+        const productDetailsDescription = lineItem?.price?.product_details?.description;
+        if (productDetailsDescription) {
+            return productDetailsDescription;
+        }
+        const product = lineItem?.price?.product;
+        if (product && typeof product === 'object') {
+            return product.description ?? null;
+        }
+        return null;
     }
     getStripeSecretKey() {
         const stripeSecretKey = this.configService.get('STRIPE_SECRET_KEY');
@@ -282,6 +382,8 @@ let CheckoutService = class CheckoutService {
                 currency: order.currency,
                 items: order.items.map((item) => ({
                     productName: item.productName,
+                    shirtColor: item.shirtColor,
+                    shirtSize: item.shirtSize,
                     quantity: item.quantity,
                     totalAmount: item.totalAmount,
                 })),
@@ -291,17 +393,7 @@ let CheckoutService = class CheckoutService {
         }
     }
     assertAdmin(cookieHeader) {
-        const token = this.getCookieValue(cookieHeader, 'Authentication');
-        if (!token) {
-            throw new common_1.ForbiddenException('Admin access required.');
-        }
-        const payload = this.verifyTokenPayload(token);
-        if (!payload) {
-            throw new common_1.ForbiddenException('Admin access required.');
-        }
-        const email = String(payload.email ?? '')
-            .trim()
-            .toLowerCase();
+        const email = this.assertAuthenticatedEmail(cookieHeader);
         const admins = (this.configService.get('ADMIN_EMAILS') ?? '')
             .split(',')
             .map((item) => item.trim().toLowerCase())
@@ -312,6 +404,20 @@ let CheckoutService = class CheckoutService {
         if (!email || !admins.includes(email)) {
             throw new common_1.ForbiddenException('Admin access required.');
         }
+    }
+    assertAuthenticatedEmail(cookieHeader) {
+        const token = this.getCookieValue(cookieHeader, 'Authentication');
+        if (!token) {
+            throw new common_1.ForbiddenException('Authentication required.');
+        }
+        const payload = this.verifyTokenPayload(token);
+        const email = String(payload?.email ?? '')
+            .trim()
+            .toLowerCase();
+        if (!email) {
+            throw new common_1.ForbiddenException('Authentication required.');
+        }
+        return email;
     }
     getCookieValue(cookieHeader, name) {
         if (!cookieHeader) {
@@ -373,7 +479,9 @@ let CheckoutService = class CheckoutService {
         return (await response.json());
     }
     async fetchStripeLineItems(sessionId, stripeSecretKey) {
-        const response = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items?limit=100`, {
+        const params = new URLSearchParams({ limit: '100' });
+        params.append('expand[]', 'data.price.product');
+        const response = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items?${params.toString()}`, {
             method: 'GET',
             headers: { Authorization: `Bearer ${stripeSecretKey}` },
         });
@@ -477,10 +585,20 @@ let CheckoutService = class CheckoutService {
         "orderId" INTEGER NOT NULL REFERENCES "CheckoutOrder"("id") ON DELETE CASCADE,
         "productName" TEXT NOT NULL,
         "productDescription" TEXT,
+        "shirtColor" TEXT,
+        "shirtSize" TEXT,
         "quantity" INTEGER NOT NULL,
         "unitAmountCents" INTEGER NOT NULL,
         "totalAmountCents" INTEGER NOT NULL
       )
+    `);
+        await this.prismaService.$executeRawUnsafe(`
+      ALTER TABLE "CheckoutOrderItem"
+      ADD COLUMN IF NOT EXISTS "shirtColor" TEXT
+    `);
+        await this.prismaService.$executeRawUnsafe(`
+      ALTER TABLE "CheckoutOrderItem"
+      ADD COLUMN IF NOT EXISTS "shirtSize" TEXT
     `);
         this.orderTablesReady = true;
     }
@@ -509,19 +627,11 @@ let CheckoutService = class CheckoutService {
         if (!orderRow) {
             return null;
         }
-        const itemRows = await this.prismaService.$queryRaw `
-      SELECT
-        "id",
-        "orderId",
-        "productName",
-        "productDescription",
-        "quantity",
-        "unitAmountCents",
-        "totalAmountCents"
-      FROM "CheckoutOrderItem"
-      WHERE "orderId" = ${orderRow.id}
-      ORDER BY "id" ASC
-    `;
+        let itemRows = await this.loadOrderItems(orderRow.id);
+        if (itemRows.some((item) => !item.shirtColor || !item.shirtSize)) {
+            await this.backfillMissingOrderItemSelections(orderRow, itemRows);
+            itemRows = await this.loadOrderItems(orderRow.id);
+        }
         return this.toOrderResponse(orderRow, itemRows);
     }
     toOrderResponse(orderRow, itemRows) {
@@ -542,14 +652,19 @@ let CheckoutService = class CheckoutService {
                 country: orderRow.deliveryCountry,
             },
             createdAt: orderRow.createdAt,
-            items: itemRows.map((item) => ({
-                id: item.id,
-                productName: item.productName,
-                productDescription: item.productDescription,
-                quantity: item.quantity,
-                unitAmount: item.unitAmountCents / 100,
-                totalAmount: item.totalAmountCents / 100,
-            })),
+            items: itemRows.map((item) => {
+                const shirtSelection = this.extractShirtSelection(item.productName, item.productDescription);
+                return {
+                    id: item.id,
+                    productName: item.productName,
+                    productDescription: item.productDescription,
+                    shirtColor: item.shirtColor ?? shirtSelection.color,
+                    shirtSize: item.shirtSize ?? shirtSelection.size,
+                    quantity: item.quantity,
+                    unitAmount: item.unitAmountCents / 100,
+                    totalAmount: item.totalAmountCents / 100,
+                };
+            }),
         };
     }
 };

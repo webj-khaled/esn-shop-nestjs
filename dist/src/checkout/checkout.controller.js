@@ -31,6 +31,9 @@ let CheckoutController = class CheckoutController {
     getOrders(cookieHeader) {
         return this.checkoutService.getOrders(cookieHeader);
     }
+    getMyOrders(cookieHeader) {
+        return this.checkoutService.getMyOrders(cookieHeader);
+    }
 };
 exports.CheckoutController = CheckoutController;
 __decorate([
@@ -54,6 +57,13 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], CheckoutController.prototype, "getOrders", null);
+__decorate([
+    (0, common_1.Get)('my-orders'),
+    __param(0, (0, common_1.Headers)('cookie')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], CheckoutController.prototype, "getMyOrders", null);
 exports.CheckoutController = CheckoutController = __decorate([
     (0, common_1.Controller)('checkout'),
     __metadata("design:paramtypes", [checkout_service_1.CheckoutService])

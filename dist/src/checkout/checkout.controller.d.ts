@@ -29,6 +29,8 @@ export declare class CheckoutController {
             id: number;
             productName: string;
             productDescription: string | null;
+            shirtColor: string | null;
+            shirtSize: string | null;
             quantity: number;
             unitAmount: number;
             totalAmount: number;
@@ -55,6 +57,36 @@ export declare class CheckoutController {
             id: number;
             productName: string;
             productDescription: string | null;
+            shirtColor: string | null;
+            shirtSize: string | null;
+            quantity: number;
+            unitAmount: number;
+            totalAmount: number;
+        }>;
+    }[]>;
+    getMyOrders(cookieHeader?: string): Promise<{
+        id: number;
+        stripeSessionId: string;
+        totalAmount: number;
+        currency: string;
+        customerEmail: string | null;
+        deliveryAddress: {
+            fullName: string;
+            phone: string | null;
+            line1: string;
+            line2: string | null;
+            city: string;
+            state: string;
+            postalCode: string;
+            country: string;
+        };
+        createdAt: Date;
+        items: Array<{
+            id: number;
+            productName: string;
+            productDescription: string | null;
+            shirtColor: string | null;
+            shirtSize: string | null;
             quantity: number;
             unitAmount: number;
             totalAmount: number;

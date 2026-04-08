@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { LoginRequest } from './dto/login.request';
 import { AuthService } from './auth.service';
@@ -42,5 +42,10 @@ export class AuthController {
       payload.token,
       payload.password,
     );
+  }
+
+  @Get('state')
+  getAuthState(@Headers('cookie') cookieHeader?: string) {
+    return this.authService.getAuthenticationState(cookieHeader);
   }
 }
