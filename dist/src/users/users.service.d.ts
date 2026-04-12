@@ -7,12 +7,12 @@ export declare class UsersService {
     private readonly logger;
     constructor(prismaService: PrismaService, emailService: EmailService);
     createUser(data: CreateUserRequest): Promise<{
-        email: string;
         id: number;
+        email: string;
     }>;
     findByIdentifier(identifier: string): Promise<{
+        id: number;
         email: string;
         password: string;
-        id: number;
     } | null>;
 }

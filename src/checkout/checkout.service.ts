@@ -122,28 +122,118 @@ type CheckoutOrderResponse = {
   }>;
 };
 
-const SHIRT_PRODUCT = {
-  id: 1,
-  name: 'Classic Shirt',
-  description: 'Premium cotton shirt with a modern fit.',
-  unitAmountCents: 3999,
-  stockByColorAndSize: {
-    black: {
-      XS: 10,
-      S: 15,
-      M: 20,
-      L: 12,
-      XL: 8,
-    },
-    white: {
-      XS: 8,
-      S: 12,
-      M: 18,
-      L: 10,
-      XL: 6,
+type ShirtColor = 'black' | 'white';
+type ShirtSize = 'XS' | 'S' | 'M' | 'L' | 'XL';
+
+type CatalogProduct = {
+  id: number;
+  name: string;
+  description: string;
+  unitAmountCents: number;
+  colors: ShirtColor[];
+  stockByColorAndSize: Record<ShirtColor, Record<ShirtSize, number>>;
+};
+
+type ValidatedCheckoutItem = CreateSessionItemRequest & {
+  product: CatalogProduct;
+};
+
+const EMPTY_STOCK: Record<ShirtSize, number> = {
+  XS: 0,
+  S: 0,
+  M: 0,
+  L: 0,
+  XL: 0,
+};
+
+const SHIRT_BLACK_STOCK: Record<ShirtSize, number> = {
+  XS: 10,
+  S: 15,
+  M: 20,
+  L: 12,
+  XL: 8,
+};
+
+const SHIRT_WHITE_STOCK: Record<ShirtSize, number> = {
+  XS: 8,
+  S: 12,
+  M: 18,
+  L: 10,
+  XL: 6,
+};
+
+const HOODIE_BLACK_STOCK: Record<ShirtSize, number> = {
+  XS: 6,
+  S: 10,
+  M: 12,
+  L: 9,
+  XL: 5,
+};
+
+const HOODIE_WHITE_STOCK: Record<ShirtSize, number> = {
+  XS: 5,
+  S: 8,
+  M: 10,
+  L: 7,
+  XL: 4,
+};
+
+const CHECKOUT_PRODUCTS: CatalogProduct[] = [
+  {
+    id: 1,
+    name: 'Nightline Black Tee',
+    description: 'Soft premium cotton tee inspired by Salzburg night events.',
+    unitAmountCents: 3999,
+    colors: ['black'],
+    stockByColorAndSize: {
+      black: SHIRT_BLACK_STOCK,
+      white: EMPTY_STOCK,
     },
   },
-} as const;
+  {
+    id: 2,
+    name: 'Snowline White Tee',
+    description:
+      'Soft premium cotton tee inspired by Salzburg winter mornings.',
+    unitAmountCents: 3999,
+    colors: ['white'],
+    stockByColorAndSize: {
+      black: EMPTY_STOCK,
+      white: SHIRT_WHITE_STOCK,
+    },
+  },
+  {
+    id: 3,
+    name: 'Nightline Black Hoodie',
+    description:
+      'Heavyweight hoodie with a brushed interior for colder evenings.',
+    unitAmountCents: 5999,
+    colors: ['black'],
+    stockByColorAndSize: {
+      black: HOODIE_BLACK_STOCK,
+      white: EMPTY_STOCK,
+    },
+  },
+  {
+    id: 4,
+    name: 'Snowline White Hoodie',
+    description:
+      'Heavyweight hoodie with a brushed interior for chilly mornings.',
+    unitAmountCents: 5999,
+    colors: ['white'],
+    stockByColorAndSize: {
+      black: EMPTY_STOCK,
+      white: HOODIE_WHITE_STOCK,
+    },
+  },
+];
+
+const CHECKOUT_PRODUCTS_BY_ID = CHECKOUT_PRODUCTS.reduce<
+  Record<number, CatalogProduct>
+>((acc, product) => {
+  acc[product.id] = product;
+  return acc;
+}, {});
 
 const STRIPE_CURRENCY = 'eur';
 
@@ -199,15 +289,15 @@ export class CheckoutService {
       );
       payload.append(
         `line_items[${index}][price_data][unit_amount]`,
-        SHIRT_PRODUCT.unitAmountCents.toString(),
+        item.product.unitAmountCents.toString(),
       );
       payload.append(
         `line_items[${index}][price_data][product_data][name]`,
-        SHIRT_PRODUCT.name,
+        item.product.name,
       );
       payload.append(
         `line_items[${index}][price_data][product_data][description]`,
-        `${SHIRT_PRODUCT.description} - Color: ${item.color}, Size: ${item.size}`,
+        `${item.product.description} - Color: ${item.color}, Size: ${item.size}`,
       );
       payload.append(
         `line_items[${index}][adjustable_quantity][enabled]`,
@@ -328,7 +418,7 @@ export class CheckoutService {
       const unitAmount =
         lineItem.price?.unit_amount ??
         (quantity > 0 ? Math.round(totalLineAmount / quantity) : 0);
-      const productName = lineItem.description ?? SHIRT_PRODUCT.name;
+      const productName = lineItem.description ?? 'ESN Salzburg Merchandise';
       const productDescription =
         this.resolveStripeLineItemDescription(lineItem);
       const shirtSelection = this.extractShirtSelection(
@@ -545,19 +635,30 @@ export class CheckoutService {
     }
   }
 
-  private validateItems(items: CreateSessionItemRequest[]) {
+  private validateItems(
+    items: CreateSessionItemRequest[],
+  ): ValidatedCheckoutItem[] {
     return items.map((item) => {
-      if (item.productId !== SHIRT_PRODUCT.id) {
+      const product = CHECKOUT_PRODUCTS_BY_ID[item.productId];
+      if (!product) {
         throw new BadRequestException('Product not found.');
       }
-      const availableStock =
-        SHIRT_PRODUCT.stockByColorAndSize[item.color][item.size];
+
+      const color = item.color;
+      const size = item.size;
+      if (!product.colors.includes(color)) {
+        throw new BadRequestException(
+          'Selected color is not available for this product.',
+        );
+      }
+
+      const availableStock = product.stockByColorAndSize[color][size];
       if (item.quantity > availableStock) {
         throw new BadRequestException(
           'Selected quantity is not available for this color/size option.',
         );
       }
-      return item;
+      return { ...item, color, size, product };
     });
   }
 

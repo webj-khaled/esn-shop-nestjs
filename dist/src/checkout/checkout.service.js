@@ -15,28 +15,91 @@ const config_1 = require("@nestjs/config");
 const crypto_1 = require("crypto");
 const prisma_service_1 = require("../prisma/prisma.service");
 const email_service_1 = require("../email/email.service");
-const SHIRT_PRODUCT = {
-    id: 1,
-    name: 'Classic Shirt',
-    description: 'Premium cotton shirt with a modern fit.',
-    unitAmountCents: 3999,
-    stockByColorAndSize: {
-        black: {
-            XS: 10,
-            S: 15,
-            M: 20,
-            L: 12,
-            XL: 8,
-        },
-        white: {
-            XS: 8,
-            S: 12,
-            M: 18,
-            L: 10,
-            XL: 6,
+const EMPTY_STOCK = {
+    XS: 0,
+    S: 0,
+    M: 0,
+    L: 0,
+    XL: 0,
+};
+const SHIRT_BLACK_STOCK = {
+    XS: 10,
+    S: 15,
+    M: 20,
+    L: 12,
+    XL: 8,
+};
+const SHIRT_WHITE_STOCK = {
+    XS: 8,
+    S: 12,
+    M: 18,
+    L: 10,
+    XL: 6,
+};
+const HOODIE_BLACK_STOCK = {
+    XS: 6,
+    S: 10,
+    M: 12,
+    L: 9,
+    XL: 5,
+};
+const HOODIE_WHITE_STOCK = {
+    XS: 5,
+    S: 8,
+    M: 10,
+    L: 7,
+    XL: 4,
+};
+const CHECKOUT_PRODUCTS = [
+    {
+        id: 1,
+        name: 'Nightline Black Tee',
+        description: 'Soft premium cotton tee inspired by Salzburg night events.',
+        unitAmountCents: 3999,
+        colors: ['black'],
+        stockByColorAndSize: {
+            black: SHIRT_BLACK_STOCK,
+            white: EMPTY_STOCK,
         },
     },
-};
+    {
+        id: 2,
+        name: 'Snowline White Tee',
+        description: 'Soft premium cotton tee inspired by Salzburg winter mornings.',
+        unitAmountCents: 3999,
+        colors: ['white'],
+        stockByColorAndSize: {
+            black: EMPTY_STOCK,
+            white: SHIRT_WHITE_STOCK,
+        },
+    },
+    {
+        id: 3,
+        name: 'Nightline Black Hoodie',
+        description: 'Heavyweight hoodie with a brushed interior for colder evenings.',
+        unitAmountCents: 5999,
+        colors: ['black'],
+        stockByColorAndSize: {
+            black: HOODIE_BLACK_STOCK,
+            white: EMPTY_STOCK,
+        },
+    },
+    {
+        id: 4,
+        name: 'Snowline White Hoodie',
+        description: 'Heavyweight hoodie with a brushed interior for chilly mornings.',
+        unitAmountCents: 5999,
+        colors: ['white'],
+        stockByColorAndSize: {
+            black: EMPTY_STOCK,
+            white: HOODIE_WHITE_STOCK,
+        },
+    },
+];
+const CHECKOUT_PRODUCTS_BY_ID = CHECKOUT_PRODUCTS.reduce((acc, product) => {
+    acc[product.id] = product;
+    return acc;
+}, {});
 const STRIPE_CURRENCY = 'eur';
 let CheckoutService = class CheckoutService {
     configService;
@@ -78,9 +141,9 @@ let CheckoutService = class CheckoutService {
             payload.append(`metadata[item${index}Size]`, item.size);
             payload.append(`line_items[${index}][quantity]`, item.quantity.toString());
             payload.append(`line_items[${index}][price_data][currency]`, STRIPE_CURRENCY);
-            payload.append(`line_items[${index}][price_data][unit_amount]`, SHIRT_PRODUCT.unitAmountCents.toString());
-            payload.append(`line_items[${index}][price_data][product_data][name]`, SHIRT_PRODUCT.name);
-            payload.append(`line_items[${index}][price_data][product_data][description]`, `${SHIRT_PRODUCT.description} - Color: ${item.color}, Size: ${item.size}`);
+            payload.append(`line_items[${index}][price_data][unit_amount]`, item.product.unitAmountCents.toString());
+            payload.append(`line_items[${index}][price_data][product_data][name]`, item.product.name);
+            payload.append(`line_items[${index}][price_data][product_data][description]`, `${item.product.description} - Color: ${item.color}, Size: ${item.size}`);
             payload.append(`line_items[${index}][adjustable_quantity][enabled]`, 'false');
         });
         const stripeResponse = await fetch('https://api.stripe.com/v1/checkout/sessions', {
@@ -161,7 +224,7 @@ let CheckoutService = class CheckoutService {
             const totalLineAmount = lineItem.amount_total ?? 0;
             const unitAmount = lineItem.price?.unit_amount ??
                 (quantity > 0 ? Math.round(totalLineAmount / quantity) : 0);
-            const productName = lineItem.description ?? SHIRT_PRODUCT.name;
+            const productName = lineItem.description ?? 'ESN Salzburg Merchandise';
             const productDescription = this.resolveStripeLineItemDescription(lineItem);
             const shirtSelection = this.extractShirtSelection(productName, productDescription);
             const metadataColor = stripeSession.metadata?.[`item${index}Color`];
@@ -334,14 +397,20 @@ let CheckoutService = class CheckoutService {
     }
     validateItems(items) {
         return items.map((item) => {
-            if (item.productId !== SHIRT_PRODUCT.id) {
+            const product = CHECKOUT_PRODUCTS_BY_ID[item.productId];
+            if (!product) {
                 throw new common_1.BadRequestException('Product not found.');
             }
-            const availableStock = SHIRT_PRODUCT.stockByColorAndSize[item.color][item.size];
+            const color = item.color;
+            const size = item.size;
+            if (!product.colors.includes(color)) {
+                throw new common_1.BadRequestException('Selected color is not available for this product.');
+            }
+            const availableStock = product.stockByColorAndSize[color][size];
             if (item.quantity > availableStock) {
                 throw new common_1.BadRequestException('Selected quantity is not available for this color/size option.');
             }
-            return item;
+            return { ...item, color, size, product };
         });
     }
     extractShirtSelection(productName, productDescription) {

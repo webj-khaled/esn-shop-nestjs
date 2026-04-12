@@ -37,23 +37,23 @@ const buildPasswordResetEmail = (appName, resetUrl, expiresInMinutes) => ({
 });
 exports.buildPasswordResetEmail = buildPasswordResetEmail;
 const buildOrderCompletedEmail = (appName, input) => {
-    const getSelectionText = (item) => {
-        const parts = [
+    const getVariantSelectionText = (item) => {
+        const optionParts = [
             item.shirtColor ? `Color: ${item.shirtColor.toUpperCase()}` : '',
             item.shirtSize ? `Size: ${item.shirtSize.toUpperCase()}` : '',
         ].filter(Boolean);
-        return parts.join(' | ');
+        return optionParts.join(' | ');
     };
     const itemListHtml = input.items
         .map((item) => {
-        const selection = getSelectionText(item);
+        const selection = getVariantSelectionText(item);
         const selectionSuffix = selection ? ` (${escapeHtml(selection)})` : '';
         return `<li>${escapeHtml(item.productName)} x ${item.quantity}${selectionSuffix} - ${formatCurrency(item.totalAmount, input.currency)}</li>`;
     })
         .join('');
     const itemListText = input.items
         .map((item) => {
-        const selection = getSelectionText(item);
+        const selection = getVariantSelectionText(item);
         const selectionSuffix = selection ? ` (${selection})` : '';
         return `${item.productName} x ${item.quantity}${selectionSuffix} - ${formatCurrency(item.totalAmount, input.currency)}`;
     })
@@ -63,11 +63,11 @@ const buildOrderCompletedEmail = (appName, input) => {
         subject: `${appName} order #${input.orderId} confirmed`,
         html: `
       <h2>Payment successful</h2>
-      <p>Your order #${input.orderId} is confirmed.</p>
+      <p>Your merchandise order #${input.orderId} is confirmed.</p>
       <ul>${itemListHtml}</ul>
       <p><strong>Total:</strong> ${total}</p>
     `,
-        text: `Payment successful. Order #${input.orderId} is confirmed.\n${itemListText}\nTotal: ${total}\n For questions, email us at Finance.salzburg@esnaustria.org`,
+        text: `Payment successful. Merchandise order #${input.orderId} is confirmed.\n${itemListText}\nTotal: ${total}\nFor questions, email us at Finance.salzburg@esnaustria.org`,
     };
 };
 exports.buildOrderCompletedEmail = buildOrderCompletedEmail;
